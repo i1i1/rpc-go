@@ -3,59 +3,124 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/libp2p/go-libp2p/p2p/discovery"
+
+	"github.com/libp2p/go-libp2p-core/host"
+
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
+)
+
+const (
+	// DiscoveryInterval is how often we re-publish our mDNS records.
+	DiscoveryInterval = time.Hour
+
+	// DiscoveryServiceTag is used in our mDNS advertisements to discover other chat peers.
+	DiscoveryServiceTag = "pubsub-chat-example"
 )
 
 func main() {
-	initLogger()
-
-	help := flag.Bool("h", false, "Display Help")
-	config, err := ParseFlags()
-	if err != nil {
-		panic(err)
-	}
-
-	if *help {
-		printHelp()
+	// parse some flags to set our nickname and the room to join
+	nickFlag := flag.String("nick", "", "nickname to use in chat. will be generated if empty")
+	roomFlag := flag.String("room", "awesome-chat-room", "name of chat room to join")
+	helpFlag := flag.Bool("h", false, "display help")
+	flag.Parse()
+	if *helpFlag {
+		flag.PrintDefaults()
 		return
 	}
 
 	ctx := context.Background()
 
-	host, err := NewHost(ctx, config.ListenAddresses)
-	if err != nil {
-		panic(err)
-	}
-	logger.Info("Host created. We are:", host.ID())
-	logger.Info(host.Addrs())
-
-	routingDiscovery, err := host.Anounce(ctx, config.RendezvousString)
-	if err != nil {
-		panic(err)
-	}
-	logger.Debug("Successfully announced!")
-
-	// Now, look for others who have announced
-	// This is like your friend telling you the location to meet you.
-	logger.Debug("Searching for other peers...")
-	peerChan, err := routingDiscovery.FindPeers(ctx, config.RendezvousString)
+	// create a new libp2p Host that listens on a random TCP port
+	h, err := libp2p.New(ctx, libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"))
 	if err != nil {
 		panic(err)
 	}
 
-	for peer := range peerChan {
-		if peer.ID == host.ID() {
-			continue
-		}
-		logger.Debug("Found peer:", peer)
-		logger.Debug("Connecting to:", peer)
-		err := host.ConnectPeer(ctx, peer.ID)
-
-		if err != nil {
-			logger.Warning("Connection failed:", err)
-		} else {
-			logger.Info("Connected to:", peer)
-		}
+	// create a new PubSub service using the GossipSub router
+	ps, err := pubsub.NewGossipSub(ctx, h)
+	if err != nil {
+		panic(err)
 	}
 
-	select {}
+	// setup local mDNS discovery
+	err = setupDiscovery(ctx, h)
+	if err != nil {
+		panic(err)
+	}
+
+	// use the nickname from the cli flag, or a default if blank
+	nick := *nickFlag
+	if len(nick) == 0 {
+		nick = defaultNick(h.ID())
+	}
+
+	// join the room from the cli flag, or the flag default
+	room := *roomFlag
+
+	// join the chat room
+	cr, err := JoinGameRoom(ctx, ps, h.ID(), nick, RoomName(room))
+	if err != nil {
+		panic(err)
+	}
+
+	// draw the UI
+	ui := NewGameUI(cr)
+	if err = ui.Run(); err != nil {
+		panic(err)
+	}
+}
+
+// printErr is like fmt.Printf, but writes to stderr.
+func printErr(m string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, m, args...)
+}
+
+// defaultNick generates a nickname based on the $USER environment variable and
+// the last 8 chars of a peer ID.
+func defaultNick(p peer.ID) string {
+	return fmt.Sprintf("%s-%s", os.Getenv("USER"), shortID(p))
+}
+
+// shortID returns the last 8 chars of a base58-encoded peer id.
+func shortID(p peer.ID) string {
+	pretty := p.Pretty()
+	return pretty[len(pretty)-8:]
+}
+
+// discoveryNotifee gets notified when we find a new peer via mDNS discovery
+type discoveryNotifee struct {
+	ctx context.Context
+	h   host.Host
+}
+
+// HandlePeerFound connects to peers discovered via mDNS. Once they're connected,
+// the PubSub system will automatically start interacting with them if they also
+// support PubSub.
+func (n *discoveryNotifee) HandlePeerFound(pi peer.AddrInfo) {
+	fmt.Printf("discovered new peer %s\n", pi.ID.Pretty())
+	err := n.h.Connect(n.ctx, pi)
+	if err != nil {
+		fmt.Printf("error connecting to peer %s: %s\n", pi.ID.Pretty(), err)
+	}
+}
+
+// setupDiscovery creates an mDNS discovery service and attaches it to the libp2p Host.
+// This lets us automatically discover peers on the same LAN and connect to them.
+func setupDiscovery(ctx context.Context, h host.Host) error {
+	// setup mDNS discovery to find local peers
+	disc, err := discovery.NewMdnsService(ctx, h, DiscoveryInterval, DiscoveryServiceTag)
+	if err != nil {
+		return err
+	}
+
+	n := discoveryNotifee{h: h, ctx: ctx}
+	disc.RegisterNotifee(&n)
+	return nil
 }
