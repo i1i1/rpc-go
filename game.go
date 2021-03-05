@@ -1,128 +1,139 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"fmt"
-	"sync"
+	"encoding/json"
 
-	"github.com/ipfs/go-log/v2"
-	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p-core/host"
-	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/libp2p/go-libp2p-core/protocol"
-	discovery "github.com/libp2p/go-libp2p-discovery"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
-	multiaddr "github.com/multiformats/go-multiaddr"
+
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
 
-type Host struct {
-	host.Host
-}
+// GameRoomBufSize is the number of incoming messages to buffer for each topic.
+const GameRoomBufSize = 128
 
-const PROTOCOL_ID = protocol.ID("/rpc-go/0.1")
+type (
+	// GameRoom represents a subscription to a single PubSub topic. Events
+	// can be published to the topic with GameRoom.Publish, and received
+	// events are pushed to the Events channel.
+	GameRoom struct {
+		// Events is a channel of events received from other peers in the game room
+		Events chan Event
 
-var logger = log.Logger("rendezvous")
+		ctx   context.Context
+		ps    *pubsub.PubSub
+		topic *pubsub.Topic
+		sub   *pubsub.Subscription
 
-func (host *Host) handleStream(stream network.Stream) {
-	logger.Info("Got a new stream!")
-
-	// Create a buffer stream for non blocking read and write.
-	rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
-
-	//event_reader := go host.readData(rw)
-	go host.writeData(rw)
-
-	// 'stream' will stay open until you close it (or the other side closes it).
-}
-
-func (host *Host) readData(rw *bufio.ReadWriter) chan<- Event {
-	ch := make(chan Event)
-	go func() {
-		for {
-			// TODO:
-		}
-	}()
-	return ch
-}
-
-func (host *Host) writeData(rw *bufio.ReadWriter) chan<- Event {
-	ch := make(chan Event)
-	go func() {
-		for ev := range ch {
-			_ = ev
-			fmt.Print("> ")
-			// TODO:
-		}
-	}()
-	return ch
-}
-
-func NewHost(ctx context.Context, listenAddresses addrList) (*Host, error) {
-	p2phost, err := libp2p.New(ctx,
-		libp2p.ListenAddrs([]multiaddr.Multiaddr(listenAddresses)...),
-	)
-	if err != nil {
-		return nil, err
+		roomName RoomName
+		self     peer.ID
+		nick     string
 	}
-	host := &Host{Host: p2phost}
-	host.Host = host
-	host.SetStreamHandler(PROTOCOL_ID, func(s network.Stream) {
-		host.handleStream(s)
-	})
-	return &Host{host}, nil
+
+	// ChatMessage gets converted to/from JSON and sent in the body of pubsub messages.
+	ChatMessage struct {
+		Message    string
+		SenderID   string
+		SenderNick string
+	}
+
+	RoomName string
+)
+
+func (name *RoomName) topicName() string {
+	return "chat-room:" + string(*name)
 }
 
-func (host *Host) Anounce(ctx context.Context, rendezvousString string) (*discovery.RoutingDiscovery, error) {
-	// Start a DHT, for use in peer discovery. We can't just make a new DHT
-	// client because we want each peer to maintain its own local copy of the
-	// DHT, so that the bootstrapping node of the DHT can go down without
-	// inhibiting future peer discovery.
-	kademliaDHT, err := dht.New(ctx, host)
+// JoinGameRoom tries to subscribe to the PubSub topic for the room name, returning
+// a GameRoom on success.
+func JoinGameRoom(
+	ctx context.Context,
+	ps *pubsub.PubSub,
+	selfID peer.ID,
+	nickname string,
+	roomName RoomName,
+) (*GameRoom, error) {
+	// join the pubsub topic
+	topic, err := ps.Join(roomName.topicName())
 	if err != nil {
 		return nil, err
 	}
 
-	// Bootstrap the DHT. In the default configuration, this spawns a Background
-	// thread that will refresh the peer table every five minutes.
-	logger.Debug("Bootstrapping the DHT")
-	if err = kademliaDHT.Bootstrap(ctx); err != nil {
+	// and subscribe to it
+	sub, err := topic.Subscribe()
+	if err != nil {
 		return nil, err
 	}
 
-	// Let's connect to the bootstrap nodes first. They will tell us about the
-	// other nodes in the network.
-	var wg sync.WaitGroup
-	for _, peerAddr := range dht.DefaultBootstrapPeers {
-		peerinfo, _ := peer.AddrInfoFromP2pAddr(peerAddr)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := host.Connect(ctx, *peerinfo); err != nil {
-				logger.Warning(err)
-			} else {
-				logger.Info("Connection established with bootstrap node:", *peerinfo)
-			}
-		}()
+	cr := &GameRoom{
+		ctx:      ctx,
+		ps:       ps,
+		topic:    topic,
+		sub:      sub,
+		self:     selfID,
+		nick:     nickname,
+		roomName: roomName,
+		Events:   make(chan Event, GameRoomBufSize),
 	}
-	wg.Wait()
 
-	// We use a rendezvous point "meet me here" to announce our location.
-	// This is like telling your friends to meet you at the Eiffel Tower.
-	logger.Info("Announcing ourselves...")
-	routingDiscovery := discovery.NewRoutingDiscovery(kademliaDHT)
-	discovery.Advertise(ctx, routingDiscovery, rendezvousString)
-
-	return routingDiscovery, nil
+	// start reading messages from the subscription in a loop
+	go cr.readLoop()
+	return cr, nil
 }
 
-func (host *Host) ConnectPeer(ctx context.Context, id peer.ID) error {
-	stream, err := host.NewStream(ctx, id, PROTOCOL_ID)
+// Publish sends a message to the pubsub topic.
+func (cr *GameRoom) Publish(message string) error {
+	m := ChatMessage{
+		Message:    message,
+		SenderID:   cr.self.Pretty(),
+		SenderNick: cr.nick,
+	}
+	msgBytes, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
+	return cr.topic.Publish(cr.ctx, msgBytes)
+}
 
-	host.handleStream(stream)
-	return nil
+func (cr *GameRoom) ListPeers() []peer.ID {
+	return cr.ps.ListPeers(cr.roomName.topicName())
+}
+
+// readLoop pulls messages from the pubsub topic and pushes them onto the Messages channel.
+func (cr *GameRoom) readLoop() {
+	for {
+		msg, err := cr.sub.Next(cr.ctx)
+		if err != nil {
+			close(cr.Events)
+			return
+		}
+		// only forward events delivered by others
+		if msg.ReceivedFrom == cr.self {
+			continue
+		}
+
+		type intermidiateEvent struct {
+			Type EventType
+			Data json.RawMessage
+		}
+		int_event := intermidiateEvent{}
+		err = json.Unmarshal(msg.Data, &int_event)
+		if err != nil {
+			continue
+		}
+
+		var event Event
+
+		switch int_event.Type {
+		case EVENT_START_GAME_VOTE:
+			event = &EventStartGameVote{}
+		case EVENT_START_GAME:
+			event = &EventStartGame{}
+		default:
+			continue
+		}
+
+		// send valid messages onto the Messages channel
+		cr.Events <- event
+	}
 }

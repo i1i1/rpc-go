@@ -1,15 +1,21 @@
 package main
 
+import (
+	"fmt"
+
+	"github.com/libp2p/go-libp2p-core/peer"
+)
+
 type (
 	EventType int
 
 	Event interface {
-		Submit()
-		Respond()
+		From() peer.ID
+		String() string
 	}
 
-	EventStartGameVote struct{}
-	EventStartGame     struct{}
+	EventStartGameVote struct{ from peer.ID }
+	EventStartGame     struct{ from peer.ID }
 )
 
 const (
@@ -24,3 +30,13 @@ const (
 	// Event which coresponds to agreement of peer to kick the another one
 	EVENT_KICK_VOTE
 )
+
+func (ev *EventStartGameVote) From() peer.ID { return ev.from }
+func (ev *EventStartGameVote) String() string {
+	return fmt.Sprintf("Start of voting for next game!")
+}
+
+func (ev *EventStartGame) From() peer.ID { return ev.from }
+func (ev *EventStartGame) String() string {
+	return fmt.Sprintf("%v voted for next game!", ev.from)
+}
