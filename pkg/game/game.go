@@ -1,7 +1,9 @@
 package game
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 
 	"github.com/i1i1/rpc-go/pkg/events"
@@ -114,27 +116,21 @@ func (cr *GameRoom) readLoop() {
 		}
 
 		type intermidiateEvent struct {
-			Type events.EventType
-			Data json.RawMessage
+			Type  events.EventType
+			Event events.Event
 		}
 		int_event := intermidiateEvent{}
-		err = json.Unmarshal(msg.Data, &int_event)
+		dec := gob.NewDecoder(bytes.NewReader(msg.Data))
+		err = dec.Decode(&int_event)
 		if err != nil {
 			continue
 		}
 
-		var event events.Event
-
-		switch int_event.Type {
-		case events.EVENT_START_GAME_VOTE:
-			event = &events.EventStartGameVote{}
-		case events.EVENT_START_GAME:
-			event = &events.EventStartGame{}
-		default:
+		if int_event.Event.Type() != int_event.Type {
+			// TODO: Print errors
 			continue
 		}
-
 		// send valid messages onto the Messages channel
-		cr.Events <- event
+		cr.Events <- int_event.Event
 	}
 }
