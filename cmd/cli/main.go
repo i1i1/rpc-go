@@ -7,13 +7,14 @@ import (
 	"os"
 	"time"
 
+	"github.com/i1i1/rpc-go/pkg/game"
+	"github.com/i1i1/rpc-go/pkg/ui"
+
 	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/libp2p/go-libp2p/p2p/discovery"
-
 	"github.com/libp2p/go-libp2p-core/host"
-
+	"github.com/libp2p/go-libp2p-core/peer"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/p2p/discovery"
 )
 
 const (
@@ -65,33 +66,22 @@ func main() {
 	room := *roomFlag
 
 	// join the chat room
-	cr, err := JoinGameRoom(ctx, ps, h.ID(), nick, RoomName(room))
+	cr, err := game.JoinGameRoom(ctx, ps, h.ID(), nick, game.RoomName(room))
 	if err != nil {
 		panic(err)
 	}
 
 	// draw the UI
-	ui := NewGameUI(cr)
+	ui := ui.NewGameUI(cr)
 	if err = ui.Run(); err != nil {
 		panic(err)
 	}
 }
 
-// printErr is like fmt.Printf, but writes to stderr.
-func printErr(m string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, m, args...)
-}
-
 // defaultNick generates a nickname based on the $USER environment variable and
 // the last 8 chars of a peer ID.
 func defaultNick(p peer.ID) string {
-	return fmt.Sprintf("%s-%s", os.Getenv("USER"), shortID(p))
-}
-
-// shortID returns the last 8 chars of a base58-encoded peer id.
-func shortID(p peer.ID) string {
-	pretty := p.Pretty()
-	return pretty[len(pretty)-8:]
+	return fmt.Sprintf("%s-%s", os.Getenv("USER"), ui.ShortID(p))
 }
 
 // discoveryNotifee gets notified when we find a new peer via mDNS discovery
