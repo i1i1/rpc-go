@@ -1,11 +1,12 @@
-package main
+package game
 
 import (
 	"context"
 	"encoding/json"
 
-	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/i1i1/rpc-go/pkg/events"
 
+	"github.com/libp2p/go-libp2p-core/peer"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
 
@@ -18,16 +19,16 @@ type (
 	// events are pushed to the Events channel.
 	GameRoom struct {
 		// Events is a channel of events received from other peers in the game room
-		Events chan Event
+		Events chan events.Event
 
-		ctx   context.Context
+		Ctx   context.Context
 		ps    *pubsub.PubSub
 		topic *pubsub.Topic
 		sub   *pubsub.Subscription
 
-		roomName RoomName
+		RoomName RoomName
 		self     peer.ID
-		nick     string
+		Nick     string
 	}
 
 	// ChatMessage gets converted to/from JSON and sent in the body of pubsub messages.
@@ -66,14 +67,14 @@ func JoinGameRoom(
 	}
 
 	cr := &GameRoom{
-		ctx:      ctx,
+		Ctx:      ctx,
 		ps:       ps,
 		topic:    topic,
 		sub:      sub,
 		self:     selfID,
-		nick:     nickname,
-		roomName: roomName,
-		Events:   make(chan Event, GameRoomBufSize),
+		Nick:     nickname,
+		RoomName: roomName,
+		Events:   make(chan events.Event, GameRoomBufSize),
 	}
 
 	// start reading messages from the subscription in a loop
@@ -86,23 +87,23 @@ func (cr *GameRoom) Publish(message string) error {
 	m := ChatMessage{
 		Message:    message,
 		SenderID:   cr.self.Pretty(),
-		SenderNick: cr.nick,
+		SenderNick: cr.Nick,
 	}
 	msgBytes, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
-	return cr.topic.Publish(cr.ctx, msgBytes)
+	return cr.topic.Publish(cr.Ctx, msgBytes)
 }
 
 func (cr *GameRoom) ListPeers() []peer.ID {
-	return cr.ps.ListPeers(cr.roomName.topicName())
+	return cr.ps.ListPeers(cr.RoomName.topicName())
 }
 
 // readLoop pulls messages from the pubsub topic and pushes them onto the Messages channel.
 func (cr *GameRoom) readLoop() {
 	for {
-		msg, err := cr.sub.Next(cr.ctx)
+		msg, err := cr.sub.Next(cr.Ctx)
 		if err != nil {
 			close(cr.Events)
 			return
@@ -113,7 +114,7 @@ func (cr *GameRoom) readLoop() {
 		}
 
 		type intermidiateEvent struct {
-			Type EventType
+			Type events.EventType
 			Data json.RawMessage
 		}
 		int_event := intermidiateEvent{}
@@ -122,13 +123,13 @@ func (cr *GameRoom) readLoop() {
 			continue
 		}
 
-		var event Event
+		var event events.Event
 
 		switch int_event.Type {
-		case EVENT_START_GAME_VOTE:
-			event = &EventStartGameVote{}
-		case EVENT_START_GAME:
-			event = &EventStartGame{}
+		case events.EVENT_START_GAME_VOTE:
+			event = &events.EventStartGameVote{}
+		case events.EVENT_START_GAME:
+			event = &events.EventStartGame{}
 		default:
 			continue
 		}

@@ -1,11 +1,16 @@
-package main
+package ui
 
 import (
 	"fmt"
 	"io"
+	"os"
 	"time"
 
+	"github.com/i1i1/rpc-go/pkg/events"
+	"github.com/i1i1/rpc-go/pkg/game"
+
 	"github.com/gdamore/tcell/v2"
+	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/rivo/tview"
 )
 
@@ -14,7 +19,7 @@ import (
 // mode. You can quit with Ctrl-C, or by typing "/quit" into the
 // chat prompt.
 type GameUI struct {
-	cr        *GameRoom
+	cr        *game.GameRoom
 	app       *tview.Application
 	peersList *tview.TextView
 
@@ -25,14 +30,14 @@ type GameUI struct {
 
 // NewGameUI returns a new GameUI struct that controls the text UI.
 // It won't actually do anything until you call Run().
-func NewGameUI(cr *GameRoom) *GameUI {
+func NewGameUI(cr *game.GameRoom) *GameUI {
 	app := tview.NewApplication()
 
 	// make a text view to contain our chat messages
 	msgBox := tview.NewTextView()
 	msgBox.SetDynamicColors(true)
 	msgBox.SetBorder(true)
-	msgBox.SetTitle(fmt.Sprintf("Room: %s", cr.roomName))
+	msgBox.SetTitle(fmt.Sprintf("Room: %s", cr.RoomName))
 
 	// text views are io.Writers, but they don't automatically refresh.
 	// this sets a change handler to force the app to redraw when we get
@@ -44,7 +49,7 @@ func NewGameUI(cr *GameRoom) *GameUI {
 	// an input field for typing messages into
 	inputCh := make(chan string, 32)
 	input := tview.NewInputField().
-		SetLabel(cr.nick + " > ").
+		SetLabel(cr.Nick + " > ").
 		SetFieldWidth(0).
 		SetFieldBackgroundColor(tcell.ColorBlack)
 
@@ -116,6 +121,12 @@ func (ui *GameUI) end() {
 	ui.doneCh <- struct{}{}
 }
 
+// ShortID returns the last 8 chars of a base58-encoded peer id.
+func ShortID(p peer.ID) string {
+	pretty := p.Pretty()
+	return pretty[len(pretty)-8:]
+}
+
 // refreshPeers pulls the list of peers currently in the chat room and
 // displays the last 8 chars of their peer id in the Peers panel in the ui.
 func (ui *GameUI) refreshPeers() {
@@ -127,7 +138,7 @@ func (ui *GameUI) refreshPeers() {
 	ui.peersList.Unlock()
 
 	for _, p := range peers {
-		fmt.Fprintln(ui.peersList, shortID(p))
+		fmt.Fprintln(ui.peersList, ShortID(p))
 	}
 
 	ui.app.Draw()
@@ -135,7 +146,7 @@ func (ui *GameUI) refreshPeers() {
 
 // displayEvent writes a Event from the room to the message window,
 // with the sender's nick highlighted in green.
-func (ui *GameUI) displayEvent(ev Event) {
+func (ui *GameUI) displayEvent(ev events.Event) {
 	prompt := withColor("green", fmt.Sprintf("<%s>:", ev.From()))
 	fmt.Fprintf(ui.msgW, "%s %s\n", prompt, ev.String())
 }
@@ -143,7 +154,7 @@ func (ui *GameUI) displayEvent(ev Event) {
 // displaySelfMessage writes a message from ourself to the message window,
 // with our nick highlighted in yellow.
 func (ui *GameUI) displaySelfMessage(msg string) {
-	prompt := withColor("yellow", fmt.Sprintf("<%s>:", ui.cr.nick))
+	prompt := withColor("yellow", fmt.Sprintf("<%s>:", ui.cr.Nick))
 	fmt.Fprintf(ui.msgW, "%s %s\n", prompt, msg)
 }
 
@@ -160,7 +171,7 @@ func (ui *GameUI) handleEvents() {
 			// when the user types in a line, publish it to the chat room and print to the message window
 			err := ui.cr.Publish(input)
 			if err != nil {
-				printErr("publish error: %s", err)
+				fmt.Fprintf(os.Stderr, "publish error: %s", err)
 			}
 			ui.displaySelfMessage(input)
 
@@ -172,7 +183,7 @@ func (ui *GameUI) handleEvents() {
 			// refresh the list of peers in the chat room periodically
 			ui.refreshPeers()
 
-		case <-ui.cr.ctx.Done():
+		case <-ui.cr.Ctx.Done():
 			return
 
 		case <-ui.doneCh:
