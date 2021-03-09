@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
-	"encoding/json"
+	"fmt"
 
 	"github.com/i1i1/rpc-go/pkg/events"
 
@@ -22,25 +22,26 @@ type (
 	GameRoom struct {
 		// Events is a channel of events received from other peers in the game room
 		Events chan events.Event
+		// Ctx is a game context
+		Ctx context.Context
+		// RoomName is name of the room
+		RoomName RoomName
+		// Self is our player name and id
+		Self events.Player
 
-		Ctx   context.Context
 		ps    *pubsub.PubSub
 		topic *pubsub.Topic
 		sub   *pubsub.Subscription
 
-		RoomName RoomName
-		self     peer.ID
-		Nick     string
-	}
-
-	// ChatMessage gets converted to/from JSON and sent in the body of pubsub messages.
-	ChatMessage struct {
-		Message    string
-		SenderID   string
-		SenderNick string
+		bannedUsers map[peer.ID]struct{}
 	}
 
 	RoomName string
+
+	SendEvent struct {
+		Type  events.EventType
+		Event events.Event
+	}
 )
 
 func (name *RoomName) topicName() string {
@@ -68,69 +69,72 @@ func JoinGameRoom(
 		return nil, err
 	}
 
-	cr := &GameRoom{
+	gr := &GameRoom{
 		Ctx:      ctx,
 		ps:       ps,
 		topic:    topic,
 		sub:      sub,
-		self:     selfID,
-		Nick:     nickname,
+		Self:     events.Player{ID: selfID, Nick: nickname},
 		RoomName: roomName,
 		Events:   make(chan events.Event, GameRoomBufSize),
 	}
 
 	// start reading messages from the subscription in a loop
-	go cr.readLoop()
-	return cr, nil
+	go gr.readLoop()
+	return gr, nil
 }
 
 // Publish sends a message to the pubsub topic.
-func (cr *GameRoom) Publish(message string) error {
-	m := ChatMessage{
-		Message:    message,
-		SenderID:   cr.self.Pretty(),
-		SenderNick: cr.Nick,
+func (gr *GameRoom) Publish(event events.Event) error {
+	ev := SendEvent{
+		Event: event,
+		Type:  event.Type(),
 	}
-	msgBytes, err := json.Marshal(m)
-	if err != nil {
+	buf := bytes.NewBuffer([]byte{})
+	enc := gob.NewEncoder(buf)
+	if err := enc.Encode(&ev); err != nil {
 		return err
 	}
-	return cr.topic.Publish(cr.Ctx, msgBytes)
+	return gr.topic.Publish(gr.Ctx, buf.Bytes())
 }
 
-func (cr *GameRoom) ListPeers() []peer.ID {
-	return cr.ps.ListPeers(cr.RoomName.topicName())
+func (gr *GameRoom) ListPeers() map[peer.ID]struct{} {
+	out := map[peer.ID]struct{}{}
+	for _, p := range gr.ps.ListPeers(gr.RoomName.topicName()) {
+		if _, ok := gr.bannedUsers[p]; !ok {
+			out[p] = struct{}{}
+		}
+	}
+	return out
 }
 
 // readLoop pulls messages from the pubsub topic and pushes them onto the Messages channel.
-func (cr *GameRoom) readLoop() {
+func (gr *GameRoom) readLoop() {
 	for {
-		msg, err := cr.sub.Next(cr.Ctx)
+		msg, err := gr.sub.Next(gr.Ctx)
 		if err != nil {
-			close(cr.Events)
+			close(gr.Events)
 			return
 		}
 		// only forward events delivered by others
-		if msg.ReceivedFrom == cr.self {
+		if msg.ReceivedFrom == gr.Self.ID {
 			continue
 		}
 
-		type intermidiateEvent struct {
-			Type  events.EventType
-			Event events.Event
-		}
-		int_event := intermidiateEvent{}
-		dec := gob.NewDecoder(bytes.NewReader(msg.Data))
-		err = dec.Decode(&int_event)
+		event := SendEvent{}
+		reader := bytes.NewReader(msg.Data)
+		dec := gob.NewDecoder(reader)
+		err = dec.Decode(&event)
 		if err != nil {
+			fmt.Printf("Err: %v\n", err)
 			continue
 		}
 
-		if int_event.Event.Type() != int_event.Type {
+		if event.Event.Type() != event.Type {
 			// TODO: Print errors
 			continue
 		}
-		// send valid messages onto the Messages channel
-		cr.Events <- int_event.Event
+
+		gr.Events <- event.Event
 	}
 }

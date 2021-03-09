@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/i1i1/rpc-go/pkg/events"
@@ -19,7 +20,7 @@ import (
 // mode. You can quit with Ctrl-C, or by typing "/quit" into the
 // chat prompt.
 type GameUI struct {
-	cr        *game.GameRoom
+	gr        *game.GameRoom
 	app       *tview.Application
 	peersList *tview.TextView
 
@@ -30,14 +31,14 @@ type GameUI struct {
 
 // NewGameUI returns a new GameUI struct that controls the text UI.
 // It won't actually do anything until you call Run().
-func NewGameUI(cr *game.GameRoom) *GameUI {
+func NewGameUI(gr *game.GameRoom) *GameUI {
 	app := tview.NewApplication()
 
 	// make a text view to contain our chat messages
 	msgBox := tview.NewTextView()
 	msgBox.SetDynamicColors(true)
 	msgBox.SetBorder(true)
-	msgBox.SetTitle(fmt.Sprintf("Room: %s", cr.RoomName))
+	msgBox.SetTitle(fmt.Sprintf("Room: %s", gr.RoomName))
 
 	// text views are io.Writers, but they don't automatically refresh.
 	// this sets a change handler to force the app to redraw when we get
@@ -49,7 +50,7 @@ func NewGameUI(cr *game.GameRoom) *GameUI {
 	// an input field for typing messages into
 	inputCh := make(chan string, 32)
 	input := tview.NewInputField().
-		SetLabel(cr.Nick + " > ").
+		SetLabel(gr.Self.Nick + " > ").
 		SetFieldWidth(0).
 		SetFieldBackgroundColor(tcell.ColorBlack)
 
@@ -98,7 +99,7 @@ func NewGameUI(cr *game.GameRoom) *GameUI {
 	app.SetRoot(flex, true)
 
 	return &GameUI{
-		cr:        cr,
+		gr:        gr,
 		app:       app,
 		peersList: peersList,
 		msgW:      msgBox,
@@ -130,14 +131,14 @@ func ShortID(p peer.ID) string {
 // refreshPeers pulls the list of peers currently in the chat room and
 // displays the last 8 chars of their peer id in the Peers panel in the ui.
 func (ui *GameUI) refreshPeers() {
-	peers := ui.cr.ListPeers()
+	peers := ui.gr.ListPeers()
 
 	// clear is not threadsafe so we need to take the lock.
 	ui.peersList.Lock()
 	ui.peersList.Clear()
 	ui.peersList.Unlock()
 
-	for _, p := range peers {
+	for p := range peers {
 		fmt.Fprintln(ui.peersList, ShortID(p))
 	}
 
@@ -147,15 +148,15 @@ func (ui *GameUI) refreshPeers() {
 // displayEvent writes a Event from the room to the message window,
 // with the sender's nick highlighted in green.
 func (ui *GameUI) displayEvent(ev events.Event) {
-	prompt := withColor("green", fmt.Sprintf("<%s>:", ev.From()))
+	prompt := withColor("green", fmt.Sprintf("<%s>:", ev.From().Nick))
 	fmt.Fprintf(ui.msgW, "%s %s\n", prompt, ev.String())
 }
 
 // displaySelfMessage writes a message from ourself to the message window,
 // with our nick highlighted in yellow.
-func (ui *GameUI) displaySelfMessage(msg string) {
-	prompt := withColor("yellow", fmt.Sprintf("<%s>:", ui.cr.Nick))
-	fmt.Fprintf(ui.msgW, "%s %s\n", prompt, msg)
+func (ui *GameUI) displaySelfEvent(ev events.Event) {
+	prompt := withColor("yellow", fmt.Sprintf("<%s>:", ev.From().Nick))
+	fmt.Fprintf(ui.msgW, "%s %s\n", prompt, ev.String())
 }
 
 // handleEvents runs an event loop that sends user input to the chat room
@@ -166,29 +167,51 @@ func (ui *GameUI) handleEvents() {
 	defer peerRefreshTicker.Stop()
 
 	for {
-		select {
-		case input := <-ui.inputCh:
-			// when the user types in a line, publish it to the chat room and print to the message window
-			err := ui.cr.Publish(input)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "publish error: %s", err)
-			}
-			ui.displaySelfMessage(input)
+		var cmd []string
+		var input string
 
-		case ev := <-ui.cr.Events:
+		select {
+		case input = <-ui.inputCh:
+			cmd = strings.Fields(input)
+		case ev := <-ui.gr.Events:
 			// when we receive a message from the chat room, print it to the message window
 			ui.displayEvent(ev)
-
+			continue
 		case <-peerRefreshTicker.C:
 			// refresh the list of peers in the chat room periodically
 			ui.refreshPeers()
-
-		case <-ui.cr.Ctx.Done():
+			continue
+		case <-ui.gr.Ctx.Done():
 			return
-
 		case <-ui.doneCh:
 			return
 		}
+
+		var event events.Event
+
+		switch cmd[0] {
+		case "/start_game_vote":
+			event = events.NewStartGameVote(ui.gr.Self)
+		case "/start_game":
+			event = events.NewStartGame(ui.gr.Self)
+		default:
+			if cmd[0][0] == '/' {
+				if cmd[0] == "/help" {
+					fmt.Fprintf(os.Stderr, "TODO: list all commands")
+				} else {
+					fmt.Fprintf(os.Stderr, "Unknown command %v. Print /help to see all commands", cmd[0])
+				}
+				continue
+			} else {
+				event = events.NewMessage(ui.gr.Self, input)
+			}
+		}
+
+		err := ui.gr.Publish(event)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "publish error: %s", err)
+		}
+		ui.displaySelfEvent(event)
 	}
 }
 

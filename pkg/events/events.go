@@ -11,18 +11,30 @@ type (
 	EventType int
 
 	Event interface {
-		From() peer.ID
+		From() Player
 		String() string
 		Type() EventType
 	}
 
-	StartGameVote struct{ from peer.ID }
-	StartGame     struct{ from peer.ID }
-	StartKickVote struct {
-		from, Kick peer.ID
-		Reason     string
+	// Player is id of player
+	Player struct {
+		// ID is libp2p id (generally key pair)
+		ID peer.ID
+		// Nick is players nickname
+		Nick string
 	}
-	KickVote struct{ from, Kick peer.ID }
+
+	StartGameVote struct{ FromPlayer Player }
+	StartGame     struct{ FromPlayer Player }
+	StartKick     struct {
+		FromPlayer, Kick Player
+		Reason           string
+	}
+	StartKickVote struct{ FromPlayer, Kick Player }
+	Message       struct {
+		FromPlayer Player
+		Text       string
+	}
 )
 
 const (
@@ -32,44 +44,70 @@ const (
 	// It means that peer is agreed to start game
 	EVENT_START_GAME
 	// Event which starts voting for kick of some peer
-	EVENT_START_KICK_VOTE
+	EVENT_START_KICK
 	// Event which happends during vote of the peer.
 	// Event which coresponds to agreement of peer to kick the another one
-	EVENT_KICK_VOTE
+	EVENT_START_KICK_VOTE
+	// Event with some text message from peer
+	EVENT_MESSAGE
 )
 
 func init() {
-	event_types := []Event{
-		&StartGame{}, &StartGameVote{}, &KickVote{}, &StartKickVote{},
-	}
-	for int := range event_types {
-		gob.Register(int)
-	}
+	gob.Register(&StartGame{})
+	gob.Register(&StartGameVote{})
+	gob.Register(&StartKick{})
+	gob.Register(&StartKickVote{})
+	gob.Register(&Message{})
 }
 
-func (*StartGameVote) Type() EventType  { return EVENT_START_GAME_VOTE }
-func (ev *StartGameVote) From() peer.ID { return ev.from }
+func NewStartGameVote(from Player) *StartGameVote { return &StartGameVote{from} }
+func (*StartGameVote) Type() EventType            { return EVENT_START_GAME_VOTE }
+func (ev *StartGameVote) From() Player            { return ev.FromPlayer }
 func (ev *StartGameVote) String() string {
 	return fmt.Sprintf("Start of voting for next game!")
 }
 
-func (*StartGame) Type() EventType  { return EVENT_START_GAME }
-func (ev *StartGame) From() peer.ID { return ev.from }
+func NewStartGame(from Player) *StartGame { return &StartGame{from} }
+func (*StartGame) Type() EventType        { return EVENT_START_GAME }
+func (ev *StartGame) From() Player        { return ev.FromPlayer }
 func (ev *StartGame) String() string {
-	return fmt.Sprintf("%v voted for next game!", ev.from)
+	return fmt.Sprintf("%v voted for next game!", ev.FromPlayer.Nick)
 }
 
-func (*StartKickVote) Type() EventType  { return EVENT_START_KICK_VOTE }
-func (ev *StartKickVote) From() peer.ID { return ev.from }
-func (ev *StartKickVote) String() string {
+func NewStartKick(from, kick Player, reason string) *StartKick {
+	return &StartKick{
+		FromPlayer: from,
+		Kick:       kick,
+		Reason:     reason,
+	}
+}
+func (*StartKick) Type() EventType { return EVENT_START_KICK }
+func (ev *StartKick) From() Player { return ev.FromPlayer }
+func (ev *StartKick) String() string {
 	return fmt.Sprintf(
 		"%v started voting for kicking peer %v! Reason: \"%v\"",
-		ev.from, ev.Kick, ev.Reason,
+		ev.FromPlayer.Nick, ev.Kick, ev.Reason,
 	)
 }
 
-func (*KickVote) Type() EventType  { return EVENT_KICK_VOTE }
-func (ev *KickVote) From() peer.ID { return ev.from }
-func (ev *KickVote) String() string {
-	return fmt.Sprintf("%v voted for kicking peer %v!", ev.from, ev.Kick)
+func NewStartKickVote(from, kick Player) *StartKickVote {
+	return &StartKickVote{
+		FromPlayer: from,
+		Kick:       kick,
+	}
 }
+func (*StartKickVote) Type() EventType { return EVENT_START_KICK_VOTE }
+func (ev *StartKickVote) From() Player { return ev.FromPlayer }
+func (ev *StartKickVote) String() string {
+	return fmt.Sprintf("%v voted for kicking peer %v!", ev.FromPlayer.Nick, ev.Kick)
+}
+
+func NewMessage(from Player, text string) *Message {
+	return &Message{
+		FromPlayer: from,
+		Text:       text,
+	}
+}
+func (*Message) Type() EventType   { return EVENT_MESSAGE }
+func (ev *Message) From() Player   { return ev.FromPlayer }
+func (ev *Message) String() string { return ev.Text }
