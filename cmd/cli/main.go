@@ -65,7 +65,7 @@ func main() {
 	// join the room from the cli flag, or the flag default
 	room := *roomFlag
 
-	// join the chat room
+	// join the game room
 	cr, err := game.JoinGameRoom(ctx, ps, h.ID(), nick, game.RoomName(room))
 	if err != nil {
 		panic(err)
