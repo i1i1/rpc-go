@@ -33,22 +33,21 @@ When a peer wants to launch a new game, it publishes a special message into the
 PubSub topic. To start a game, all players who wants to participate should send
 a vote for starting game.
 
-If majority of players will not respond in a certain amount of time, game will
-not start. If all nodes voted for starting a game, game starts. Players who 
+If all nodes voted for starting a game, game starts. Players who
 had not voted can be kicked.
 
 When the game starts, each node should do following:
 
-* create an ECDSA key
+* create a symmetric key
 * choose his move (Rock, Paper, etc.)
 * send message with encrypted move
 
-After node receives moves from all other players, it sends the key to PubSub.
+After node receives moves from all other players, it sends the key to PubSub topic.
 If some node did not send move or key within a certain timeout, it can be
 kicked.
 
 Kicking forbids player to take part in games in this GameRoom. Node can start
-voting for kicking other node by sending a special message to PubSub. Then all
+voting for kicking other node by sending a special message to PubSub channel. Then all
 of the players can vote within a certain timeout. If majority votes. node will
 be ignored and no players will accept messages from it.
 
