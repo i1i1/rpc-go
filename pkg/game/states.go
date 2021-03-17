@@ -200,8 +200,17 @@ func (this *GameState) resolveResult(self events.Player, peers map[peer.ID]struc
 		} else {
 			winners = actions[keys[1]]
 		}
-		messageStr := fmt.Sprintf("Winners' peers IDs are %v", winners)
+
+		for _, player := range winners {
+			if self.ID == player {
+				messageStr := fmt.Sprintf("%v Won!", self.Nick)
+				this.pubChannel.Publish(events.NewMessage(self, messageStr))
+				return nil
+			}
+		}
+		messageStr := fmt.Sprintf("%v lost. Maybe next time :(", self.Nick)
 		this.pubChannel.Publish(events.NewMessage(self, messageStr))
+		return nil
 	}
 	return nil
 }

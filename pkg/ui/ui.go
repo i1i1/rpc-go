@@ -148,7 +148,8 @@ func (ui *GameUI) refreshPeers() {
 // displayEvent writes a Event from the room to the message window,
 // with the sender's nick highlighted in green.
 func (ui *GameUI) displayEvent(ev events.Event) {
-	prompt := withColor("green", fmt.Sprintf("<%s>:", ev.From().Nick))
+	// prompt := withColor("green", fmt.Sprintf("<%s>:", ev.From().Nick))
+	prompt := ""
 	fmt.Fprintf(ui.msgW, "%s %s\n", prompt, ev.String())
 }
 
