@@ -1,8 +1,11 @@
 package game
 
 import (
-	"github.com/i1i1/rpc-go/pkg/events"
+	"fmt"
+	"time"
 
+	"github.com/i1i1/rpc-go/pkg/events"
+	"github.com/i1i1/rpc-go/pkg/my_crypto"
 	"github.com/libp2p/go-libp2p-core/peer"
 )
 
@@ -16,12 +19,39 @@ const (
 	STATE_ENDGAME
 )
 
+// Possible Turns
+type Turn uint32
+
+const (
+	TURN_ROCK = iota
+	TURN_PAPER
+	TURN_SCISSORS
+	TURN_LIZARD
+	TURN_SPOCK
+)
+
+const (
+	// In seconds
+	TIMEOUT = 10
+)
+
 type (
 	GameStateType int
 	GameState     struct {
-		stateType GameStateType
+		// gamestates can produce events that should be published
+		pubChannel Publisher
+		stateType  GameStateType
 		// If vote is going on, it is not nil
 		vote *Vote
+		// cancellation timer
+		timer *time.Timer
+		// moves
+		moves *Moves
+	}
+
+	Moves struct {
+		encrypted map[peer.ID][]byte
+		keys      map[peer.ID][]byte
 	}
 
 	// Info about votes
@@ -32,8 +62,8 @@ type (
 	}
 )
 
-func makeStartState() GameState {
-	return GameState{stateType: STATE_WAIT, vote: nil}
+func makeStartState(pubChannel Publisher) GameState {
+	return GameState{pubChannel: pubChannel, stateType: STATE_WAIT, vote: nil}
 }
 
 func (this GameState) processEvent(
@@ -42,40 +72,179 @@ func (this GameState) processEvent(
 	// peers who participate
 	peers map[peer.ID]struct{},
 	// player
-	self events.Player,
-) GameState {
+	self events.Player) {
 	switch this.stateType {
 	case STATE_WAIT:
 		if event.Type() == events.EVENT_START_GAME_VOTE {
 
-			// who started vote is voted
-			voteList := map[peer.ID]struct{}{self.ID: struct{}{}}
-			vote := Vote{voted: voteList, author: self.ID}
+			voteList := make(map[peer.ID]struct{})
+			vote := Vote{voted: voteList, author: event.From().ID}
+
 			// next state - vote for game start
-			return GameState{stateType: STATE_GAME_VOTE, vote: &vote}
+			this.stateType = STATE_GAME_VOTE
+			this.vote = &vote
 
-			// TODO TIMEOUT
-
+			// start timeout timer
+			if vote.author == self.ID {
+				this.timer = time.NewTimer(time.Second * TIMEOUT)
+				this.pubChannel.Publish(events.NewStartGame(self))
+				go this.cancel(self)
+			}
 		}
-	// kick
-	// else if event.Type() == events.EVENT_START_GAME {
-
-	// 	this.vote.voted[self.ID] = struct{}{}
-
-	// 	if len(peers) == len(this.vote.voted) {
-	// 		// All voted
-
-	// 		// CHOOSE MOVE
-
-	// 		return GameState{stateType: STATE_MOVES_EXCHANGE, vote: nil}
-	// 	}
-	// 	return this
-	// }
-
 	case STATE_GAME_VOTE:
+		if event.Type() == events.EVENT_START_GAME {
+			// add players vote
+			this.vote.voted[event.From().ID] = struct{}{}
+			// check if this was last one
+			if len(peers) <= len(this.vote.voted) {
+				this.timer.Stop()
 
+				// update state. preparing to moves exchange
+				this.stateType = STATE_MOVES_EXCHANGE
+				this.vote.voted = nil
+				this.moves.encrypted = make(map[peer.ID][]byte)
+
+				if this.vote.author == self.ID {
+					this.timer = time.NewTimer(TIMEOUT)
+					go this.cancel(self)
+				}
+			}
+		}
+		if event.Type() == events.EVENT_CANCEL && this.vote.author == event.From().ID {
+			this.stateType = STATE_WAIT
+			this.vote = nil
+			this.moves = nil
+		}
+	case STATE_MOVES_EXCHANGE:
+		if event.Type() == events.EVENT_MOVE {
+			this.moves.encrypted[event.From().ID] = event.ExtraContent()
+			if len(peers) <= len(this.moves.encrypted) {
+				this.timer.Stop()
+				this.stateType = STATE_KEYS_EXCHANGE
+				// TODO SEND ACTUAL KEY (HOW???)
+				this.pubChannel.Publish(events.NewKey(self, nil))
+				this.timer = time.NewTimer(TIMEOUT)
+				go this.cancel(self)
+			}
+		}
+		if event.Type() == events.EVENT_CANCEL && this.vote.author == event.From().ID {
+			this.stateType = STATE_WAIT
+			this.vote = nil
+			this.moves = nil
+		}
+	case STATE_KEYS_EXCHANGE:
+		if event.Type() == events.EVENT_KEY {
+			if len(peers) <= len(this.moves.keys) {
+				this.timer.Stop()
+				this.resolveResult(self, peers)
+				// reset game state
+				this.stateType = STATE_WAIT
+				this.moves = nil
+				this.vote = nil
+			}
+		}
+		if event.Type() == events.EVENT_CANCEL && this.vote.author == event.From().ID {
+			this.stateType = STATE_WAIT
+			this.vote = nil
+			this.moves.encrypted = nil
+			this.moves.keys = nil
+		}
 	}
 }
-func timeout() {
+func (this GameState) cancel(self events.Player) {
+	<-this.timer.C
+	this.pubChannel.Publish(events.NewCancel(self))
+}
+func (this GameState) resolveResult(self events.Player, peers map[peer.ID]struct{}) error {
+	moves := this.moves
+	var actions = make(map[Turn][]peer.ID)
+	// Decrypt all actions
+	for player, _ := range peers {
+		turn := Turn(my_crypto.Decrypt(moves.encrypted[player], moves.keys[player]))
+		if _, ok := actions[turn]; ok {
+			actions[turn] = append(actions[turn], player)
+		} else {
+			actions[turn] = []peer.ID{player}
+		}
+	}
+	if len(actions) != 2 {
+		this.pubChannel.Publish(events.NewMessage(self, "Tie!"))
+	} else {
+		keys := make([]Turn, 0, len(actions))
+		for k := range actions {
+			keys = append(keys, k)
+		}
 
+		var winners []peer.ID
+
+		if keys[0].fights(keys[1]) {
+			winners = actions[keys[0]]
+		} else {
+			winners = actions[keys[1]]
+		}
+		messageStr := fmt.Sprintf("Winners' peers IDs are %v", winners)
+		this.pubChannel.Publish(events.NewMessage(self, messageStr))
+	}
+	return nil
+}
+
+func (this Turn) fights(other Turn) bool {
+	switch this {
+	case TURN_ROCK:
+		switch other {
+		case TURN_PAPER:
+			return false
+		case TURN_SCISSORS:
+			return true
+		case TURN_LIZARD:
+			return true
+		case TURN_SPOCK:
+			return false
+		}
+	case TURN_PAPER:
+		switch other {
+		case TURN_ROCK:
+			return true
+		case TURN_SCISSORS:
+			return false
+		case TURN_LIZARD:
+			return false
+		case TURN_SPOCK:
+			return true
+		}
+	case TURN_SCISSORS:
+		switch other {
+		case TURN_ROCK:
+			return false
+		case TURN_PAPER:
+			return true
+		case TURN_LIZARD:
+			return true
+		case TURN_SPOCK:
+			return false
+		}
+	case TURN_LIZARD:
+		switch other {
+		case TURN_ROCK:
+			return false
+		case TURN_PAPER:
+			return true
+		case TURN_SCISSORS:
+			return false
+		case TURN_SPOCK:
+			return true
+		}
+	case TURN_SPOCK:
+		switch other {
+		case TURN_ROCK:
+			return true
+		case TURN_PAPER:
+			return false
+		case TURN_SCISSORS:
+			return true
+		case TURN_LIZARD:
+			return false
+		}
+	}
+	return false
 }

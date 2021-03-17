@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/gob"
 	"fmt"
-	"time"
 
 	"github.com/i1i1/rpc-go/pkg/events"
 
@@ -44,6 +43,10 @@ type (
 		Type  events.EventType
 		Event events.Event
 	}
+
+	Publisher interface {
+		Publish(event events.Event) error
+	}
 )
 
 func (name *RoomName) topicName() string {
@@ -72,15 +75,15 @@ func JoinGameRoom(
 	}
 
 	gr := &GameRoom{
-		Ctx:       ctx,
-		ps:        ps,
-		topic:     topic,
-		sub:       sub,
-		Self:      events.Player{ID: selfID, Nick: nickname},
-		RoomName:  roomName,
-		Events:    make(chan events.Event, GameRoomBufSize),
-		gameState: makeStartState(),
+		Ctx:      ctx,
+		ps:       ps,
+		topic:    topic,
+		sub:      sub,
+		Self:     events.Player{ID: selfID, Nick: nickname},
+		RoomName: roomName,
+		Events:   make(chan events.Event, GameRoomBufSize),
 	}
+	gr.gameState.pubChannel = gr
 
 	// start reading messages from the subscription in a loop
 	go gr.readLoop()
@@ -111,13 +114,8 @@ func (gr *GameRoom) ListPeers() map[peer.ID]struct{} {
 	return out
 }
 
-const (
-	TIMEOUT = 10
-)
-
 // readLoop pulls messages from the pubsub topic and pushes them onto the Messages channel.
 func (gr *GameRoom) readLoop() {
-	var timer *time.Timer = nil
 	for {
 		msg, err := gr.sub.Next(gr.Ctx)
 		if err != nil {
@@ -143,23 +141,7 @@ func (gr *GameRoom) readLoop() {
 		}
 
 		// process event
-		newState := gr.gameState.processEvent(event.Event, gr.ListPeers(), gr.Self)
-
-		// if it is a vote, listen for timeout
-		if newState.vote != nil && timer == nil {
-			// start timeout timer
-			timer = time.NewTimer(time.Second * TIMEOUT)
-			go func() {
-				<-timer.C
-				gr.Publish(events.NewCancel(gr.Self))
-			}()
-		} else {
-			if gr.gameState.stateType != newState.stateType {
-				timer.Stop()
-				timer = nil
-			}
-		}
-
+		gr.gameState.processEvent(event.Event, gr.ListPeers(), gr.Self)
 		gr.Events <- event.Event
 	}
 }

@@ -1,6 +1,7 @@
 package events
 
 import (
+	"encoding/binary"
 	"encoding/gob"
 	"fmt"
 
@@ -14,6 +15,7 @@ type (
 		From() Player
 		String() string
 		Type() EventType
+		ExtraContent() []byte
 	}
 
 	// Player is id of player
@@ -36,6 +38,14 @@ type (
 		Text       string
 	}
 	Cancel struct{ FromPlayer Player }
+	Move   struct {
+		encryptedMove []byte
+		FromPlayer    Player
+	}
+	Key struct {
+		FromPlayer Player
+		key        []byte
+	}
 )
 
 const (
@@ -53,6 +63,12 @@ const (
 	EVENT_MESSAGE
 
 	EVENT_CANCEL
+
+	// Event with R-P-S-L-Spock
+	EVENT_MOVE
+
+	// Key to decrypt move
+	EVENT_KEY
 )
 
 func init() {
@@ -69,6 +85,7 @@ func (ev *StartGameVote) From() Player            { return ev.FromPlayer }
 func (ev *StartGameVote) String() string {
 	return fmt.Sprintf("Start of voting for next game!")
 }
+func (ev *StartGameVote) ExtraContent() []byte { return nil }
 
 func NewStartGame(from Player) *StartGame { return &StartGame{from} }
 func (*StartGame) Type() EventType        { return EVENT_START_GAME }
@@ -76,6 +93,7 @@ func (ev *StartGame) From() Player        { return ev.FromPlayer }
 func (ev *StartGame) String() string {
 	return fmt.Sprintf("%v voted for next game!", ev.FromPlayer.Nick)
 }
+func (ev *StartGame) ExtraContent() []byte { return nil }
 
 func NewStartKick(from, kick Player, reason string) *StartKick {
 	return &StartKick{
@@ -92,6 +110,7 @@ func (ev *StartKick) String() string {
 		ev.FromPlayer.Nick, ev.Kick, ev.Reason,
 	)
 }
+func (ev *StartKick) ExtraContent() []byte { return nil }
 
 func NewStartKickVote(from, kick Player) *StartKickVote {
 	return &StartKickVote{
@@ -104,6 +123,7 @@ func (ev *StartKickVote) From() Player { return ev.FromPlayer }
 func (ev *StartKickVote) String() string {
 	return fmt.Sprintf("%v voted for kicking peer %v!", ev.FromPlayer.Nick, ev.Kick)
 }
+func (ev *StartKickVote) ExtraContent() []byte { return nil }
 
 func NewMessage(from Player, text string) *Message {
 	return &Message{
@@ -111,9 +131,10 @@ func NewMessage(from Player, text string) *Message {
 		Text:       text,
 	}
 }
-func (*Message) Type() EventType   { return EVENT_MESSAGE }
-func (ev *Message) From() Player   { return ev.FromPlayer }
-func (ev *Message) String() string { return ev.Text }
+func (*Message) Type() EventType         { return EVENT_MESSAGE }
+func (ev *Message) From() Player         { return ev.FromPlayer }
+func (ev *Message) String() string       { return ev.Text }
+func (ev *Message) ExtraContent() []byte { return nil }
 
 func NewCancel(from Player) *Cancel {
 	return &Cancel{FromPlayer: from}
@@ -123,3 +144,21 @@ func (ev *Cancel) From() Player { return ev.FromPlayer }
 func (ev *Cancel) String() string {
 	return fmt.Sprintf("%v cancelled current vote", ev.FromPlayer.Nick)
 }
+func (ev *Cancel) ExtraContent() []byte { return nil }
+
+func NewMove(from Player, turn uint32) *Move {
+	bs := make([]byte, 4)
+	binary.LittleEndian.PutUint32(bs, turn)
+	// TODO ENCRYPTION
+	return &Move{FromPlayer: from, encryptedMove: bs}
+}
+func (*Move) Type() EventType         { return EVENT_MOVE }
+func (ev *Move) From() Player         { return ev.FromPlayer }
+func (ev *Move) String() string       { return fmt.Sprintf("%v sent his move!", ev.FromPlayer.Nick) }
+func (ev *Move) ExtraContent() []byte { return ev.encryptedMove }
+
+func NewKey(from Player, key []byte) *Key { return &Key{FromPlayer: from, key: key} }
+func (*Key) Type() EventType              { return EVENT_KEY }
+func (this *Key) From() Player            { return this.FromPlayer }
+func (this *Key) String() string          { return "" }
+func (this *Key) ExtraContent() []byte    { return this.key }
