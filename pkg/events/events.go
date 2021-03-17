@@ -35,6 +35,7 @@ type (
 		FromPlayer Player
 		Text       string
 	}
+	Cancel struct{ FromPlayer Player }
 )
 
 const (
@@ -50,6 +51,8 @@ const (
 	EVENT_START_KICK_VOTE
 	// Event with some text message from peer
 	EVENT_MESSAGE
+
+	EVENT_CANCEL
 )
 
 func init() {
@@ -111,3 +114,12 @@ func NewMessage(from Player, text string) *Message {
 func (*Message) Type() EventType   { return EVENT_MESSAGE }
 func (ev *Message) From() Player   { return ev.FromPlayer }
 func (ev *Message) String() string { return ev.Text }
+
+func NewCancel(from Player) *Cancel {
+	return &Cancel{FromPlayer: from}
+}
+func (*Cancel) Type() EventType { return EVENT_CANCEL }
+func (ev *Cancel) From() Player { return ev.FromPlayer }
+func (ev *Cancel) String() string {
+	return fmt.Sprintf("%v cancelled current vote", ev.FromPlayer.Nick)
+}
