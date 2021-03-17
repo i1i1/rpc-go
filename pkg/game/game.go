@@ -50,7 +50,7 @@ type (
 )
 
 func (name *RoomName) topicName() string {
-	return "chat-room:" + string(*name)
+	return "game-room:" + string(*name)
 }
 
 // JoinGameRoom tries to subscribe to the PubSub topic for the room name, returning
@@ -104,6 +104,7 @@ func (gr *GameRoom) Publish(event events.Event) error {
 	return gr.topic.Publish(gr.Ctx, buf.Bytes())
 }
 
+// returns all peers in gameroom, including self
 func (gr *GameRoom) ListPeers() map[peer.ID]struct{} {
 	out := map[peer.ID]struct{}{}
 	for _, p := range gr.ps.ListPeers(gr.RoomName.topicName()) {
@@ -111,6 +112,7 @@ func (gr *GameRoom) ListPeers() map[peer.ID]struct{} {
 			out[p] = struct{}{}
 		}
 	}
+	out[gr.Self.ID] = struct{}{}
 	return out
 }
 
@@ -136,10 +138,12 @@ func (gr *GameRoom) readLoop() {
 
 		if event.Event.Type() != event.Type {
 			// "no such type" error
+			// fmt.Println("no such type error", event)
 			// TODO: Print errors
 			continue
 		}
 
+		// fmt.Println(event)
 		// process event
 		gr.gameState.processEvent(event.Event, gr.ListPeers(), gr.Self)
 		gr.Events <- event.Event

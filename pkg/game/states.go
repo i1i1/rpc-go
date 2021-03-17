@@ -66,13 +66,17 @@ func makeStartState(pubChannel Publisher) GameState {
 	return GameState{pubChannel: pubChannel, stateType: STATE_WAIT, vote: nil}
 }
 
-func (this GameState) processEvent(
+func (this *GameState) processEvent(
 	// incoming event
 	event events.Event,
 	// peers who participate
 	peers map[peer.ID]struct{},
 	// player
-	self events.Player) {
+	self events.Player,
+) {
+	// fmt.Printf("%#v\n", this)
+	// fmt.Printf("%#v\n", event)
+	// fmt.Printf("%#v\n", event.Type())
 	switch this.stateType {
 	case STATE_WAIT:
 		if event.Type() == events.EVENT_START_GAME_VOTE {
@@ -85,10 +89,11 @@ func (this GameState) processEvent(
 			this.vote = &vote
 
 			// start timeout timer
-			if vote.author == self.ID {
+			if this.vote.author == self.ID {
 				this.timer = time.NewTimer(time.Second * TIMEOUT)
 				this.pubChannel.Publish(events.NewStartGame(self))
-				go this.cancel(self)
+				// fmt.Println("here1")
+				go this.cancel(self, "voting for game start")
 			}
 		}
 	case STATE_GAME_VOTE:
@@ -96,17 +101,21 @@ func (this GameState) processEvent(
 			// add players vote
 			this.vote.voted[event.From().ID] = struct{}{}
 			// check if this was last one
-			if len(peers) <= len(this.vote.voted) {
-				this.timer.Stop()
+			if len(peers) == len(this.vote.voted) {
+				if this.timer != nil {
+					this.timer.Stop()
+				}
 
 				// update state. preparing to moves exchange
 				this.stateType = STATE_MOVES_EXCHANGE
 				this.vote.voted = nil
+				this.moves = &Moves{}
 				this.moves.encrypted = make(map[peer.ID][]byte)
 
 				if this.vote.author == self.ID {
-					this.timer = time.NewTimer(TIMEOUT)
-					go this.cancel(self)
+					this.timer = time.NewTimer(time.Second * TIMEOUT)
+					// fmt.Println("here2")
+					go this.cancel(self, "moves exchange")
 				}
 			}
 		}
@@ -118,13 +127,18 @@ func (this GameState) processEvent(
 	case STATE_MOVES_EXCHANGE:
 		if event.Type() == events.EVENT_MOVE {
 			this.moves.encrypted[event.From().ID] = event.ExtraContent()
-			if len(peers) <= len(this.moves.encrypted) {
-				this.timer.Stop()
+			if len(peers) == len(this.moves.encrypted) {
+				// fmt.Println("here")
+				if this.timer != nil {
+					this.timer.Stop()
+				}
 				this.stateType = STATE_KEYS_EXCHANGE
+				this.moves.keys = make(map[peer.ID][]byte)
 				// TODO SEND ACTUAL KEY (HOW???)
 				this.pubChannel.Publish(events.NewKey(self, nil))
-				this.timer = time.NewTimer(TIMEOUT)
-				go this.cancel(self)
+				this.timer = time.NewTimer(time.Second * TIMEOUT)
+				// fmt.Println("here3")
+				go this.cancel(self, "keys exchange")
 			}
 		}
 		if event.Type() == events.EVENT_CANCEL && this.vote.author == event.From().ID {
@@ -134,7 +148,9 @@ func (this GameState) processEvent(
 		}
 	case STATE_KEYS_EXCHANGE:
 		if event.Type() == events.EVENT_KEY {
-			if len(peers) <= len(this.moves.keys) {
+			this.moves.keys[event.From().ID] = event.ExtraContent()
+			// fmt.Println("here1", len(peers), len(this.moves.keys))
+			if len(peers) == len(this.moves.keys) {
 				this.timer.Stop()
 				this.resolveResult(self, peers)
 				// reset game state
@@ -151,15 +167,16 @@ func (this GameState) processEvent(
 		}
 	}
 }
-func (this GameState) cancel(self events.Player) {
+func (this *GameState) cancel(self events.Player, what string) {
 	<-this.timer.C
-	this.pubChannel.Publish(events.NewCancel(self))
+	this.pubChannel.Publish(events.NewCancel(self, what))
 }
-func (this GameState) resolveResult(self events.Player, peers map[peer.ID]struct{}) error {
+func (this *GameState) resolveResult(self events.Player, peers map[peer.ID]struct{}) error {
 	moves := this.moves
 	var actions = make(map[Turn][]peer.ID)
 	// Decrypt all actions
 	for player, _ := range peers {
+		// fmt.Println("states", moves.encrypted)
 		turn := Turn(my_crypto.Decrypt(moves.encrypted[player], moves.keys[player]))
 		if _, ok := actions[turn]; ok {
 			actions[turn] = append(actions[turn], player)
@@ -167,6 +184,7 @@ func (this GameState) resolveResult(self events.Player, peers map[peer.ID]struct
 			actions[turn] = []peer.ID{player}
 		}
 	}
+	// fmt.Println("actions", actions)
 	if len(actions) != 2 {
 		this.pubChannel.Publish(events.NewMessage(self, "Tie!"))
 	} else {

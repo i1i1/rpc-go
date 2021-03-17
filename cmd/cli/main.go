@@ -28,7 +28,7 @@ const (
 func main() {
 	// parse some flags to set our nickname and the room to join
 	nickFlag := flag.String("nick", "", "nickname to use in chat. will be generated if empty")
-	roomFlag := flag.String("room", "awesome-chat-room", "name of chat room to join")
+	roomFlag := flag.String("room", "default-room", "name of chat room to join")
 	helpFlag := flag.Bool("h", false, "display help")
 	flag.Parse()
 	if *helpFlag {

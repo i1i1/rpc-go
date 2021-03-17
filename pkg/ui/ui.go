@@ -159,6 +159,14 @@ func (ui *GameUI) displaySelfEvent(ev events.Event) {
 	fmt.Fprintf(ui.msgW, "%s %s\n", prompt, ev.String())
 }
 
+var valid_moves = map[string]game.Turn{
+	"rock":     game.TURN_ROCK,
+	"paper":    game.TURN_PAPER,
+	"scissors": game.TURN_SCISSORS,
+	"lizard":   game.TURN_LIZARD,
+	"spock":    game.TURN_SPOCK,
+}
+
 // handleEvents runs an event loop that sends user input to the chat room
 // and displays messages received from the chat room. It also periodically
 // refreshes the list of peers in the UI.
@@ -194,6 +202,15 @@ func (ui *GameUI) handleEvents() {
 			event = events.NewStartGameVote(ui.gr.Self)
 		case "/start_game":
 			event = events.NewStartGame(ui.gr.Self)
+		case "/choose":
+			if len(cmd) == 2 {
+				if v, ok := valid_moves[cmd[1]]; ok {
+					event = events.NewMove(ui.gr.Self, uint32(v))
+					// fmt.Println("ui", event.ExtraContent())
+					break
+				}
+			}
+			fmt.Fprintf(os.Stderr, "/choose requires 1 additional argument: rock, paper, scissors, lizard ot Spock")
 		default:
 			if cmd[0][0] == '/' {
 				if cmd[0] == "/help" {
@@ -211,7 +228,7 @@ func (ui *GameUI) handleEvents() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "publish error: %s", err)
 		}
-		ui.displaySelfEvent(event)
+		// ui.displaySelfEvent(event)
 	}
 }
 

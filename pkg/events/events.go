@@ -37,9 +37,12 @@ type (
 		FromPlayer Player
 		Text       string
 	}
-	Cancel struct{ FromPlayer Player }
-	Move   struct {
-		encryptedMove []byte
+	Cancel struct {
+		FromPlayer Player
+		What       string
+	}
+	Move struct {
+		EncryptedMove []byte
 		FromPlayer    Player
 	}
 	Key struct {
@@ -77,6 +80,9 @@ func init() {
 	gob.Register(&StartKick{})
 	gob.Register(&StartKickVote{})
 	gob.Register(&Message{})
+	gob.Register(&Cancel{})
+	gob.Register(&Move{})
+	gob.Register(&Key{})
 }
 
 func NewStartGameVote(from Player) *StartGameVote { return &StartGameVote{from} }
@@ -136,29 +142,32 @@ func (ev *Message) From() Player         { return ev.FromPlayer }
 func (ev *Message) String() string       { return ev.Text }
 func (ev *Message) ExtraContent() []byte { return nil }
 
-func NewCancel(from Player) *Cancel {
-	return &Cancel{FromPlayer: from}
+func NewCancel(from Player, what string) *Cancel {
+	return &Cancel{FromPlayer: from, What: what}
 }
 func (*Cancel) Type() EventType { return EVENT_CANCEL }
 func (ev *Cancel) From() Player { return ev.FromPlayer }
 func (ev *Cancel) String() string {
-	return fmt.Sprintf("%v cancelled current vote", ev.FromPlayer.Nick)
+	return fmt.Sprintf("%v cancelled %v", ev.FromPlayer.Nick, ev.What)
 }
 func (ev *Cancel) ExtraContent() []byte { return nil }
 
 func NewMove(from Player, turn uint32) *Move {
-	bs := make([]byte, 4)
+	bs := make([]byte, 4, 4)
 	binary.LittleEndian.PutUint32(bs, turn)
+	// fmt.Println("events", bs)
 	// TODO ENCRYPTION
-	return &Move{FromPlayer: from, encryptedMove: bs}
+	return &Move{FromPlayer: from, EncryptedMove: bs}
 }
 func (*Move) Type() EventType         { return EVENT_MOVE }
 func (ev *Move) From() Player         { return ev.FromPlayer }
 func (ev *Move) String() string       { return fmt.Sprintf("%v sent his move!", ev.FromPlayer.Nick) }
-func (ev *Move) ExtraContent() []byte { return ev.encryptedMove }
+func (ev *Move) ExtraContent() []byte { return ev.EncryptedMove }
 
 func NewKey(from Player, key []byte) *Key { return &Key{FromPlayer: from, key: key} }
 func (*Key) Type() EventType              { return EVENT_KEY }
 func (this *Key) From() Player            { return this.FromPlayer }
-func (this *Key) String() string          { return "" }
-func (this *Key) ExtraContent() []byte    { return this.key }
+func (this *Key) String() string {
+	return fmt.Sprintf("%v sent his decryption key!", this.FromPlayer.Nick)
+}
+func (this *Key) ExtraContent() []byte { return this.key }
